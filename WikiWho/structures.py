@@ -20,6 +20,11 @@ class Word(object):
         self.last_rev_id = 0  # Revision id where the word was last time used.
         self.matched = False
 
+        # new attributes for using in relations
+        self.deleted = []
+        self.used = []
+        self.freq = []
+
     def __repr__(self):
         return str(id(self))
 
@@ -90,6 +95,7 @@ class Revision(object):
         self.ordered_paragraphs = []  # Ordered list of paragraph hashes.
         self.length = 0  # Content length (bytes).
         self.original_adds = 0  # Number of tokens originally added in this revision.
+        self.comment = "" # got from py2 version
 
     def __repr__(self):
         return str(id(self))
@@ -109,3 +115,32 @@ class Revision(object):
             revision['obj'].append(p)
 
         return revision
+
+
+class Relation(object):
+
+    def __init__(self):
+
+        self.revision = ''     # Wikipedia revision id
+        self.author = ''       # Author of the revision
+        self.length = 0        # Total length of 'revision'
+        self.total_tokens = 0
+        self.is_vandalism = 0 # NEW at 01.08.18
+
+        # self.added = 0         # Number of new tokens.  --> list, if tokens should be listed instead of counted here
+        self.added = []         # Number of new tokens.  --> list, if tokens should be listed instead of counted here
+
+        self.deleted = {}      # Given a revision, the number of tokens deleted from that revision
+        self.reintroduced = {} # Given a revision, the number of tokens reintroduced from that revision
+        self.redeleted = {}    #
+        #self.revert = {}
+        self.undo_delete = {}   #fomerly, undo_delete and undo_reintro were merged in "revert"
+        self.undo_reintro = {}
+
+
+        self.self_reintroduced = {}
+        self.self_redeleted = {}
+        self.self_deleted = {}
+        #self.self_revert = {}
+        self.self_undo_delete = {}   #fomerly, undo_delete and undo_reintro were merged in "revert"
+        self.self_undo_reintro = {}
