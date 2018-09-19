@@ -7,14 +7,15 @@
     Andriy Rodchenko,
     Kenan Erdogan
 """
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
+from __future__ import absolute_import # Imports: Multi-Line and Absolute/Relative
+from __future__ import division # change the / operator to mean true division throughout the module.
+from __future__ import print_function #  replaces the print statement and suggests a specific signature for the new function
+from __future__ import unicode_literals # to provide a convenient way to spell ASCII strings and arbitrary binary data
 
 from difflib import Differ
 
-from .structures import Word, Sentence, Paragraph, Revision
+# RELATION ADDED
+from .structures import Word, Sentence, Paragraph, Revision, Relation
 from .utils import calculate_hash, split_into_paragraphs, split_into_sentences, split_into_tokens, \
     compute_avg_word_freq
 
@@ -51,6 +52,9 @@ class Wikiwho:
         self.text_curr = ''
         self.temp = []
 
+        # RELATION ADDED
+        self.relations = {} # Container of relationships
+
     def clean_attributes(self):
         """
         Empty attributes that are usually not needed after analyzing an article.
@@ -84,13 +88,13 @@ class Wikiwho:
             text_len = len(text)
             if not vandalism and not(revision.comment and revision.minor):
                 # if content is not moved (flag) to different article in good faith, check for vandalism
-                # if revisions have reached a certain size
+                # if revisions have reached a certain size  
                 if self.revision_prev.length > PREVIOUS_LENGTH and \
                    text_len < CURR_LENGTH and \
                    ((text_len-self.revision_prev.length) / self.revision_prev.length) <= CHANGE_PERCENTAGE:
                     # VANDALISM: CHANGE PERCENTAGE - DELETION
                     vandalism = True
-
+                   
             if vandalism:
                 # print("---------------------------- FLAG 1")
                 self.revision_curr = self.revision_prev
@@ -102,6 +106,11 @@ class Wikiwho:
                 self.revision_curr.id = rev_id
                 self.revision_curr.length = text_len
                 self.revision_curr.timestamp = revision.timestamp.long_format()
+
+                # RELATION ADDED
+                self.relation = Relation()
+                self.relation.revision = rev_id
+                self.relation.length = text_len
 
                 # Get editor information
                 if revision.user:
@@ -117,13 +126,20 @@ class Wikiwho:
                     contributor_id = ''
                 editor = contributor_id
                 editor = str(editor) if editor != 0 else '0|{}'.format(contributor_name)
+               
+               # Actual name of contributor
+                # editor = contributor_name 
                 self.revision_curr.editor = editor
+                
+                # Add Relation's author/edit
+                self.relation.author = editor
 
                 # Content within the revision.
                 self.text_curr = text.lower()
 
+                # RELATION ADDED
                 # Perform comparison.
-                vandalism = self.determine_authorship()
+                vandalism = self.determine_authorship(self.relation)
 
                 if vandalism:
                     # print "---------------------------- FLAG 2"
@@ -134,7 +150,13 @@ class Wikiwho:
                     # Add the current revision with all the information.
                     self.revisions.update({self.revision_curr.id: self.revision_curr})
                     self.ordered_revisions.append(self.revision_curr.id)
+                    # RELATION ADDED
+                    self.relations.update({self.revision_curr.id : self.relation})
+                    
+
+
             self.temp = []
+
 
     def analyse_article(self, page):
         """
@@ -165,6 +187,7 @@ class Wikiwho:
                    text_len < CURR_LENGTH and \
                    ((text_len-self.revision_prev.length) / self.revision_prev.length) <= CHANGE_PERCENTAGE:
                     # VANDALISM: CHANGE PERCENTAGE - DELETION
+
                     vandalism = True
 
             if vandalism:
@@ -179,19 +202,33 @@ class Wikiwho:
                 self.revision_curr.length = text_len
                 self.revision_curr.timestamp = revision['timestamp']
 
+                # RELATION ADDED
+
+                # Relation of the current relation.
+                self.relation = Relation()
+                self.relation.revision = rev_id
+                self.relation.length = text_len
+
+
                 # Get editor information.
                 # Some revisions don't have editor.
                 contributor_id = revision.get('userid', '')
                 contributor_name = revision.get('user', '')
                 editor = contributor_id
+                
                 editor = str(editor) if editor != 0 else '0|{}'.format(contributor_name)
+                # editor = contributor_name
                 self.revision_curr.editor = editor
+                
+               # RELATION ADDED
+                self.relation.author = editor
 
                 # Content within the revision.
                 self.text_curr = text.lower()
 
-                # Perform comparison.
-                vandalism = self.determine_authorship()
+
+                # RELATION ADDED
+                vandalism = self.determine_authorship(self.relation)
 
                 if vandalism:
                     # print "---------------------------- FLAG 2"
@@ -202,9 +239,13 @@ class Wikiwho:
                     # Add the current revision with all the information.
                     self.revisions.update({self.revision_curr.id: self.revision_curr})
                     self.ordered_revisions.append(self.revision_curr.id)
+                    # RELATION ADDED
+                    self.relations.update({self.revision_curr.id : self.relation})
+
             self.temp = []
 
-    def determine_authorship(self):
+    # RELATION ADDED
+    def determine_authorship(self, relation):
         # Containers for unmatched paragraphs and sentences in both revisions.
         unmatched_sentences_curr = []
         unmatched_sentences_prev = []
@@ -215,14 +256,17 @@ class Wikiwho:
         vandalism = False
 
         try:
+            # RELATION ADDED
             # Analysis of the paragraphs in the current revision.
             unmatched_paragraphs_curr, unmatched_paragraphs_prev, matched_paragraphs_prev = \
-                self.analyse_paragraphs_in_revision()
+                self.analyse_paragraphs_in_revision(relation)
 
+            # RELATION ADDED
             # Analysis of the sentences in the unmatched paragraphs of the current revision.
             if unmatched_paragraphs_curr:
                 unmatched_sentences_curr, unmatched_sentences_prev, matched_sentences_prev, total_sentences = \
-                    self.analyse_sentences_in_paragraphs(unmatched_paragraphs_curr, unmatched_paragraphs_prev)
+                    self.analyse_sentences_in_paragraphs(unmatched_paragraphs_curr, unmatched_paragraphs_prev, relation)
+
 
                 # TODO: spam detection
                 if len(unmatched_paragraphs_curr) / len(self.revision_curr.ordered_paragraphs) > UNMATCHED_PARAGRAPH:
@@ -231,9 +275,17 @@ class Wikiwho:
 
                 # Analysis of words in unmatched sentences (diff of both texts).
                 if unmatched_sentences_curr:
-                    matched_words_prev, vandalism = self.analyse_words_in_sentences(unmatched_sentences_curr,
-                                                                                    unmatched_sentences_prev,
-                                                                                    possible_vandalism)
+                    # RELATION ADDED
+                    matched_words_prev, vandalism = self.analyse_words_in_sentences(unmatched_sentences_curr, unmatched_sentences_prev, possible_vandalism, relation)
+
+            # RELATION ADDED
+            if (len(unmatched_paragraphs_curr) == 0):
+                for paragraph in unmatched_paragraphs_prev:
+                    for sentence_key in paragraph.sentences.keys():
+                        for sentence in paragraph.sentences[sentence_key]:
+                            if not(sentence.matched):
+                                unmatched_sentences_prev.append(sentence)
+
         except Exception:
             # Error occurred during analysing the current revision
             # Hold the last successfully processed revision.
@@ -246,20 +298,80 @@ class Wikiwho:
                         sentence.matched = False
                         for word_prev in sentence.words:
                             word_prev.matched = False
+
             for matched_sentence in matched_sentences_prev:
                 matched_sentence.matched = False
                 for word_prev in matched_sentence.words:
                     word_prev.matched = False
+
             for matched_word in matched_words_prev:
                 matched_word.matched = False
+
             raise
 
         if not vandalism:
             # Add the information of 'deletion' to words
+
             for unmatched_sentence in unmatched_sentences_prev:
+
                 for word_prev in unmatched_sentence.words:
+
+                   # RELATION ADDED
+                    isredeleted = False
+
                     if not word_prev.matched:
                         word_prev.outbound.append(self.revision_curr.id)
+
+                        # 'redelete' relationship is only against the last insertion
+                        if len(word_prev.deleted)> 0:
+                            elem = word_prev.deleted[-1]
+
+                        #for elem in word_prev.deleted:
+                            isredeleted = True
+                            if (elem != self.revision_curr.id) and (elem in self.revisions.keys()):
+                                if (self.revisions[elem].editor != self.revision_curr.editor):
+                                    if (elem in relation.redeleted.keys()):
+                                        relation.redeleted.update({elem : relation.redeleted[elem] + [word_prev.value]})
+                                    else:
+                                        relation.redeleted.update({elem : [word_prev.value]})
+                                else:
+                                    if (elem in relation.self_redeleted.keys()):
+                                        relation.self_redeleted.update({elem : relation.self_redeleted[elem] + [word_prev.value]})
+                                    else:
+                                        relation.self_redeleted.update({elem : [word_prev.value]})
+
+                        # Revert: deleting something that somebody else reintroduced. only against the last one --> undo_reintro
+                        if len(word_prev.freq)> 0:
+                            elem = word_prev.freq[-1]
+
+                            if (elem != self.revision_curr.id) and (elem in self.revisions.keys()):
+                                if (self.revisions[elem].editor != self.revision_curr.editor):
+                                    if (elem in relation.undo_reintro.keys()):
+                                        relation.undo_reintro.update({elem: relation.undo_reintro[elem] + [word_prev.value]})
+                                    else:
+                                        relation.undo_reintro.update({elem: [word_prev.value]})
+                                else:
+                                    if (elem in relation.self_undo_reintro.keys()):
+                                        relation.self_undo_reintro.update({elem: relation.self_undo_reintro[elem] + [word_prev.value]})
+                                    else:
+                                        relation.self_undo_reintro.update({elem: [word_prev.value]})
+
+
+                        word_prev.deleted.append(self.revision_curr.id)
+                        
+                        if not isredeleted:
+                            if (self.revisions[word_prev.origin_rev_id].editor != self.revision_curr.editor):
+                                if (word_prev.origin_rev_id in relation.deleted.keys()):
+                                    relation.deleted.update({word_prev.origin_rev_id : relation.deleted[word_prev.origin_rev_id] + [word_prev.value] })
+                                else:
+                                    relation.deleted.update({word_prev.origin_rev_id : [word_prev.value] })
+                            else:
+                                if (word_prev.origin_rev_id in relation.self_deleted.keys()):
+                                    relation.self_deleted.update({word_prev.origin_rev_id : relation.self_deleted[word_prev.origin_rev_id] + [word_prev.value] })
+                                else:
+                                    relation.self_deleted.update({word_prev.origin_rev_id : [word_prev.value] })
+
+
             if not unmatched_sentences_prev:
                 # if all current paragraphs are matched
                 for unmatched_paragraph in unmatched_paragraphs_prev:
@@ -284,6 +396,7 @@ class Wikiwho:
                             word_prev.last_rev_id = self.revision_curr.id
                         # reset
                         word_prev.matched = False
+
         for matched_sentence in matched_sentences_prev:
             matched_sentence.matched = False
             for word_prev in matched_sentence.words:
@@ -295,6 +408,7 @@ class Wikiwho:
                     word_prev.last_rev_id = self.revision_curr.id
                 # reset
                 word_prev.matched = False
+
         for matched_word in matched_words_prev:
             # first update last used info of matched prev words
             # there is no inbound chance because we only diff with words of previous revision
@@ -324,7 +438,8 @@ class Wikiwho:
 
         return vandalism
 
-    def analyse_paragraphs_in_revision(self):
+    # RELATION ADDED
+    def analyse_paragraphs_in_revision(self, relation):
         # Containers for unmatched and matched paragraphs.
         unmatched_paragraphs_curr = []
         unmatched_paragraphs_prev = []
@@ -340,6 +455,7 @@ class Wikiwho:
             if not paragraph:
                 # dont track empty lines
                 continue
+
             # TODO should we clean whitespaces in paragraph level?
             # paragraph = ' '.join(split_into_tokens(paragraph))
             hash_curr = calculate_hash(paragraph)
@@ -371,6 +487,8 @@ class Wikiwho:
                                 sentence_prev.matched = True
                                 for word_prev in sentence_prev.words:
                                     word_prev.matched = True
+                                    # RELATION ADDED
+                                    word_prev.used.append(self.revision_curr.id)
 
                         # Add paragraph to current revision.
                         if hash_curr in self.revision_curr.paragraphs:
@@ -379,6 +497,7 @@ class Wikiwho:
                             self.revision_curr.paragraphs.update({paragraph_prev.hash_value: [paragraph_prev]})
                         self.revision_curr.ordered_paragraphs.append(paragraph_prev.hash_value)
                         break
+
                     elif matched_all:
                         # if all prev words in this paragraph are already matched
                         paragraph_prev.matched = True
@@ -402,6 +521,7 @@ class Wikiwho:
                                     else:
                                         matched_all = False
 
+
                         if not matched_one:
                             # if there is not any already matched prev word, so set them all as matched
                             matched_curr = True
@@ -414,6 +534,58 @@ class Wikiwho:
                                     sentence_prev.matched = True
                                     for word_prev in sentence_prev.words:
                                         word_prev.matched = True
+                                       # RELATION ADDED
+                                        word_prev.used.append(self.revision_curr.id)
+
+                                        # RELATION ADDED
+
+                                        # Revert: reintroducing something that somebody else deleted, (and was not used in the previous revision) --> undo_delete
+                                        if (self.revision_prev.id not in word_prev.used):
+                                            #if (self.revision_curr.id == 11):
+                                            #    print "Revert in 11", word_prev.value, word_prev.deleted, relation.revert
+                                            if len(word_prev.deleted) > 0:
+                                                elem = word_prev.deleted[-1]
+                                            #for elem in word_prev.deleted:
+                                                if (elem in self.revisions.keys()):
+                                                    if (self.revisions[elem].editor != self.revision_curr.editor):
+                                                        if (elem in relation.undo_delete.keys()):
+                                                            relation.undo_delete.update({elem : relation.undo_delete[elem] + [word_prev.value]})
+                                                        else:
+                                                            relation.undo_delete.update({elem : [word_prev.value]})
+                                                    else:
+                                                        if (elem in relation.self_undo_delete.keys()):
+                                                            relation.self_undo_delete.update({elem : relation.self_undo_delete[elem] + [word_prev.value]})
+                                                        else:
+                                                            relation.self_undo_delete.update({elem : [word_prev.value]})
+
+                                        if (self.revision_prev.id not in word_prev.used):
+                                            if (word_prev.origin_rev_id in self.revisions.keys()):
+                                                if (self.revisions[word_prev.origin_rev_id].editor != self.revision_curr.editor):
+                                                    #print "HERE",
+
+                                                    if len(word_prev.freq) == 0:
+                                                        elem = word_prev.origin_rev_id
+                                                    else:
+                                                        elem = word_prev.freq[-1]
+
+                                                    if (elem in relation.reintroduced.keys()):
+                                                        relation.reintroduced.update({elem : relation.reintroduced[elem] + [word_prev.value] })
+                                                    else:
+
+                                                        relation.reintroduced.update({elem : [word_prev.value]})
+                                                else:
+
+                                                    if len(word_prev.freq) == 0:
+                                                        elem = word_prev.origin_rev_id
+                                                    else:
+                                                        elem = word_prev.freq[-1]
+
+                                                    if (elem in relation.self_reintroduced.keys()):
+                                                        relation.self_reintroduced.update({elem : relation.self_reintroduced[elem] + [word_prev.value]})
+                                                    else:
+                                                        relation.self_reintroduced.update({elem : [word_prev.value]})
+
+                                            word_prev.freq.append(self.revision_curr.id)
 
                             # Add paragraph to current revision.
                             if hash_curr in self.revision_curr.paragraphs:
@@ -422,6 +594,7 @@ class Wikiwho:
                                 self.revision_curr.paragraphs.update({paragraph_prev.hash_value: [paragraph_prev]})
                             self.revision_curr.ordered_paragraphs.append(paragraph_prev.hash_value)
                             break
+
                         elif matched_all:
                             # if all prev words in this paragraph are already matched
                             paragraph_prev.matched = True
@@ -437,12 +610,16 @@ class Wikiwho:
                 paragraph_curr.hash_value = hash_curr
                 paragraph_curr.value = paragraph
 
+                
+
                 if hash_curr in self.revision_curr.paragraphs:
                     self.revision_curr.paragraphs[hash_curr].append(paragraph_curr)
                 else:
                     self.revision_curr.paragraphs.update({paragraph_curr.hash_value: [paragraph_curr]})
+                
                 self.revision_curr.ordered_paragraphs.append(paragraph_curr.hash_value)
                 unmatched_paragraphs_curr.append(paragraph_curr)
+
 
         # Identify unmatched paragraphs in previous revision for further analysis.
         for paragraph_prev_hash in self.revision_prev.ordered_paragraphs:
@@ -456,9 +633,11 @@ class Wikiwho:
             if not paragraph_prev.matched:
                 unmatched_paragraphs_prev.append(paragraph_prev)
 
+        # RELATION ADDED
         return unmatched_paragraphs_curr, unmatched_paragraphs_prev, matched_paragraphs_prev
 
-    def analyse_sentences_in_paragraphs(self, unmatched_paragraphs_curr, unmatched_paragraphs_prev):
+    # RELATION ADDED
+    def analyse_sentences_in_paragraphs(self, unmatched_paragraphs_curr, unmatched_paragraphs_prev, relation):
         # Containers for unmatched and matched sentences.
         unmatched_sentences_curr = []
         unmatched_sentences_prev = []
@@ -493,6 +672,8 @@ class Wikiwho:
                                 else:
                                     matched_all = False
 
+
+
                             if not matched_one:
                                 # if there is not any already matched prev word, so set them all as matched
                                 sentence_prev.matched = True
@@ -501,6 +682,8 @@ class Wikiwho:
 
                                 for word_prev in sentence_prev.words:
                                     word_prev.matched = True
+                                   # RELATION ADDED
+                                    word_prev.used.append(self.revision_curr.id)
 
                                 # Add the sentence information to the paragraph.
                                 if hash_curr in paragraph_curr.sentences:
@@ -536,6 +719,65 @@ class Wikiwho:
 
                                 for word_prev in sentence_prev.words:
                                     word_prev.matched = True
+                                    # RELATION ADDED
+                                    word_prev.used.append(self.revision_curr.id)
+
+                                   # RELATION ADDED
+
+                                    # Revert: reintroducing something that somebody else deleted --> undo_delete
+                                    if (self.revision_prev.id not in word_prev.used):
+
+                                        if len(word_prev.deleted) > 0:
+                                            elem = word_prev.deleted[-1]
+                                        # for elem in word_prev.deleted:
+                                            #if (self.revision_curr.id == 11):
+                                            #    print "Revert in 11", word_prev.value, word_prev.deleted, relation.revert
+                                            if (elem in self.revisions.keys()):
+                                                if (self.revisions[elem].editor != self.revision_curr.editor):
+                                                    if (elem in relation.undo_delete.keys()):
+                                                        relation.undo_delete.update({elem : relation.undo_delete[elem] + [word_prev.value]})
+                                                    else:
+                                                        relation.undo_delete.update({elem : [word_prev.value]})
+                                                else:
+                                                    if (elem in relation.self_undo_delete.keys()):
+                                                        relation.self_undo_delete.update({elem : relation.self_undo_delete[elem] + [word_prev.value]})
+                                                    else:
+                                                        relation.self_undo_delete.update({elem : [word_prev.value]})
+                                    #print "relation.revert", word_prev.value, word_prev.deleted, relation.revert, self.revision_curr.id
+
+                                    if (self.revision_prev.id not in word_prev.used):
+                                        if (word_prev.origin_rev_id in self.revisions.keys()):
+                                            if (self.revisions[word_prev.origin_rev_id].editor != self.revision_curr.editor):
+                                                # Changed here to define 'reintroduced' towards the last revision who introduced the text.
+
+                                                if len(word_prev.freq) == 0:
+                                                    elem = word_prev.origin_rev_id
+                                                else:
+                                                    elem = word_prev.freq[-1]
+
+                                                if (elem in relation.reintroduced.keys()):
+
+                                                    relation.reintroduced.update({elem : relation.reintroduced[elem] + [word_prev.value] })
+                                                else:
+                                                    relation.reintroduced.update({elem : [word_prev.value] })
+                                                #if (word_prev.origin_rev_id in relation.reintroduced.keys()):
+                                                #    relation.reintroduced.update({word_prev.origin_rev_id : relation.reintroduced[word_prev.origin_rev_id] + [word_prev.value] })
+                                                #else:
+                                                #    relation.reintroduced.update({word_prev.origin_rev_id : [word_prev.value] })
+                                            else:
+
+                                                if len(word_prev.freq) == 0:
+                                                    elem = word_prev.origin_rev_id
+                                                else:
+                                                    elem = word_prev.freq[-1]
+
+                                                if (elem in relation.self_reintroduced.keys()):
+                                                    relation.self_reintroduced.update({elem : relation.self_reintroduced[elem] + [word_prev.value]})
+                                                else:
+                                                    relation.self_reintroduced.update({elem: [word_prev.value]})
+
+                                        word_prev.freq.append(self.revision_curr.id)
+
 
                                 # Add the sentence information to the paragraph.
                                 if hash_curr in paragraph_curr.sentences:
@@ -555,13 +797,15 @@ class Wikiwho:
                     sentence_curr = Sentence()
                     sentence_curr.value = sentence
                     sentence_curr.hash_value = hash_curr
-
+                    
                     if hash_curr in paragraph_curr.sentences:
                         paragraph_curr.sentences[hash_curr].append(sentence_curr)
                     else:
                         paragraph_curr.sentences.update({sentence_curr.hash_value: [sentence_curr]})
+
                     paragraph_curr.ordered_sentences.append(sentence_curr.hash_value)
                     unmatched_sentences_curr.append(sentence_curr)
+
 
         # Identify the unmatched sentences in the previous paragraph revision.
         for paragraph_prev in unmatched_paragraphs_prev:
@@ -579,9 +823,11 @@ class Wikiwho:
                     sentence_prev.matched = True
                     matched_sentences_prev.append(sentence_prev)
 
+
         return unmatched_sentences_curr, unmatched_sentences_prev, matched_sentences_prev, total_sentences
 
-    def analyse_words_in_sentences(self, unmatched_sentences_curr, unmatched_sentences_prev, possible_vandalism):
+    # RELATION ADDED
+    def analyse_words_in_sentences(self, unmatched_sentences_curr, unmatched_sentences_prev, possible_vandalism, relation):
         matched_words_prev = []
         unmatched_words_prev = []
 
@@ -626,22 +872,33 @@ class Wikiwho:
                     self.token_id += 1
                     self.revision_curr.original_adds += 1
                     self.tokens.append(word_curr)
+
+                    # RELATION ADDED
+                    word_curr.used.append(self.revision_curr.id)
+                    relation.added.append(word_curr.value)
+
             return matched_words_prev, possible_vandalism
 
         d = Differ()
         diff = list(d.compare(text_prev, text_curr))
+
         for sentence_curr in unmatched_sentences_curr:
             for word in sentence_curr.splitted:
                 curr_matched = False
                 pos = 0
                 diff_len = len(diff)
+
                 while pos < diff_len:
                     word_diff = diff[pos]
                     if word == word_diff[2:]:
+
                         if word_diff[0] == ' ':
                             # match
                             for word_prev in unmatched_words_prev:
                                 if not word_prev.matched and word_prev.value == word:
+
+                                    # RELATION ADDED
+                                    word_prev.used.append(self.revision_curr.id)
 
                                     word_prev.matched = True
                                     curr_matched = True
@@ -650,6 +907,7 @@ class Wikiwho:
                                     diff[pos] = ''
                                     pos = diff_len + 1
                                     break
+
                         elif word_diff[0] == '-':
                             # deleted
                             for word_prev in unmatched_words_prev:
@@ -658,7 +916,25 @@ class Wikiwho:
                                     word_prev.outbound.append(self.revision_curr.id)
                                     matched_words_prev.append(word_prev)
                                     diff[pos] = ''
+
+                                    # RELATION ADDED
+                                    word_prev.deleted.append(self.revision_curr.id)
+                                    if (self.revisions[word_prev.origin_rev_id].editor != self.revision_curr.editor):
+                                        if (word_prev.origin_rev_id in relation.deleted.keys()):
+
+                                            relation.deleted.update({word_prev.origin_rev_id : relation.deleted[word_prev.origin_rev_id] + [word_prev.value] })
+                                        else:
+                                            relation.deleted.update({word_prev.origin_rev_id : [word_prev.value] })
+                                    else:
+                                        if (word_prev.origin_rev_id in relation.self_deleted.keys()):
+
+                                            relation.self_deleted.update({word_prev.origin_rev_id : relation.self_deleted[word_prev.origin_rev_id] + [word_prev.value] })
+                                        else:
+                                            relation.self_deleted.update({word_prev.origin_rev_id : [word_prev.value] })
+
+                                    ### END OF RELATION ###
                                     break
+
                         elif word_diff[0] == '+':
                             # a new added word
                             curr_matched = True
@@ -672,6 +948,10 @@ class Wikiwho:
                             self.token_id += 1
                             self.revision_curr.original_adds += 1
                             self.tokens.append(word_curr)
+                            # RELATION ADDED
+                            word_curr.used.append(self.revision_curr.id)
+                            relation.added.append(word_curr.value) # TODO: we could change this to provide context for oadds
+
                             diff[pos] = ''
                             pos = diff_len + 1
                     pos += 1
@@ -687,5 +967,9 @@ class Wikiwho:
                     self.token_id += 1
                     self.revision_curr.original_adds += 1
                     self.tokens.append(word_curr)
+                    # RELATION ADDED
+                    word_curr.used.append(self.revision_curr.id)
+                    relation.added = relation.added.append(word_curr.value) # TODO: we could change this to provide context for oadds
+
 
         return matched_words_prev, possible_vandalism
